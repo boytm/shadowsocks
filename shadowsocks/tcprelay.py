@@ -32,6 +32,8 @@ import encrypt
 import eventloop
 import utils
 from common import parse_header
+from common import parse_header_v4
+from common import composite_connect_header
 
 
 TIMEOUTS_CLEAN_SIZE = 512
@@ -228,7 +230,7 @@ class TCPRelayHandler(object):
                         traceback.print_exc()
                     self.destroy()
 
-    def _handle_stage_hello(self, data):
+    def _handle_stage_hello(self, data, v4 = False):
         try:
             if self._is_local:
                 cmd = ord(data[1])
@@ -248,13 +250,14 @@ class TCPRelayHandler(object):
                     # just wait for the client to disconnect
                     return
                 elif cmd == CMD_CONNECT:
-                    # just trim VER CMD RSV
-                    data = data[3:]
+                    # just trim VER CMD RSV for socks v5
+                    # just trim VER CMD  for socks v4
+                    data = data[3:] if not v4 else data[2:]
                 else:
                     logging.error('unknown command %d', cmd)
                     self.destroy()
                     return
-            header_result = parse_header(data)
+            header_result = parse_header(data) if not v4 else parse_header_v4(data) # add v4
             if header_result is None:
                 raise Exception('can not parse header')
             addrtype, remote_addr, remote_port, header_length = header_result
@@ -265,8 +268,13 @@ class TCPRelayHandler(object):
             self._stage = STAGE_DNS
             if self._is_local:
                 # forward address to remote
-                self._write_to_sock('\x05\x00\x00\x01\x00\x00\x00\x00\x10\x10',
-                                    self._local_sock)
+                if v4:
+                    self._write_to_sock('\x00\x5a\x00\x00\x00\x00\x00\x00', 
+                                        self._local_sock)
+                    data = composite_connect_header(addrtype, remote_addr, remote_port)
+                else:
+                    self._write_to_sock('\x05\x00\x00\x01\x00\x00\x00\x00\x10\x10',  
+                                        self._local_sock)
                 data_to_send = self._encryptor.encrypt(data)
                 self._data_to_write_to_remote.append(data_to_send)
                 # notice here may go into _handle_dns_resolved directly
@@ -365,10 +373,16 @@ class TCPRelayHandler(object):
             self._write_to_sock(data, self._remote_sock)
             return
         elif is_local and self._stage == STAGE_INIT:
-            # TODO check auth method
-            self._write_to_sock('\x05\00', self._local_sock)
-            self._stage = STAGE_HELLO
-            return
+            version = ord(data[0])
+            if version == 4:
+                logging.debug('client is socks4')
+                self._handle_stage_hello(data, True)
+                return
+            elif version == 5:
+                # TODO check auth method
+                self._write_to_sock('\x05\00', self._local_sock)
+                self._stage = STAGE_HELLO
+                return
         elif self._stage == STAGE_REPLY:
             self._handle_stage_reply(data)
         elif (is_local and self._stage == STAGE_HELLO) or \

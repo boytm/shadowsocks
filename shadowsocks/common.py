@@ -130,3 +130,50 @@ def parse_header(data):
     if dest_addr is None:
         return None
     return addrtype, dest_addr, dest_port, header_length
+
+def parse_header_v4(data):
+    addrtype = ADDRTYPE_IPV4
+    dest_addr = None
+    dest_port = None
+    header_length = 0
+
+    logging.debug('parse header v4')
+    if len(data) >= 7:
+        dest_port = struct.unpack('>H', data[0:2])[0]
+        if data[2:5] == '\x00\x00\x00':
+            addrtype = ADDRTYPE_HOST
+        else:
+            dest_addr = socket.inet_ntoa(data[2:6])
+
+        pos = data.find('\x00', 6)
+        if pos != -1:
+            userid = data[6:pos]
+
+            if addrtype == ADDRTYPE_HOST:
+                pos_addr = data.find('\x00', pos + 1)
+                dest_addr = data[pos + 1:pos_addr] if pos_addr != -1 else None
+
+            header_length = pos + 1
+        else:
+            logging.warn('header v4 is too short')
+    else:
+        logging.warn('header v4 is too short')
+
+    if dest_addr is None:
+        return None
+    return addrtype, dest_addr, dest_port, header_length
+
+def composite_connect_header(addrtype, dest_addr, dest_port):
+    data = ''
+    data += struct.pack('>B', addrtype)
+
+    if addrtype == ADDRTYPE_HOST:
+        data += struct.pack('>B', len(dest_addr))
+        data += dest_addr
+    else:
+        data += socket.inet_aton(dest_addr)
+
+    data += struct.pack('>H', dest_port)
+
+    return data
+
